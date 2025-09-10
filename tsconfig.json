@@ -12,6 +12,9 @@
     "lib": ["esnext"],
     "types": ["node"],
 
+    //Recommended setting for ts-jest
+    "esModuleInterop": true,
+
     // Other Outputs
     "sourceMap": true,
     "declaration": true,
