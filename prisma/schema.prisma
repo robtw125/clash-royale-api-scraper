@@ -14,6 +14,72 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Rarity {
+  id         Int    @id @default(autoincrement())
+  name       String @unique
+  startLevel Int
+  maxLevel   Int
+  Card       Card[]
+}
+
 model Card {
-  id Int @id
+  id          Int     @id @default(autoincrement())
+  supercellId Int
+  isEvolution Boolean
+  name        String
+  elixirCost  Int?
+  iconUrl     String
+  rarityId    Int
+  Rarity      Rarity  @relation(fields: [rarityId], references: [id])
+  Decks       Deck[]
+
+  @@unique([supercellId, isEvolution])
+}
+
+model Deck {
+  id Int @id @default(autoincrement())
+
+  Cards      Card[]
+  TeamMember TeamMember[]
+}
+
+model GameMode {
+  id     Int      @id @default(autoincrement())
+  name   String   @unique
+  Battle Battle[]
+}
+
+model Battle {
+  id         Int      @id @default(autoincrement())
+  gameModeId Int
+  time       DateTime
+  GameMode   GameMode @relation(fields: [gameModeId], references: [id])
+  Team       Team[]
+}
+
+model Team {
+  id         Int          @id @default(autoincrement())
+  crowns     Int
+  battleId   Int
+  Battle     Battle       @relation(fields: [battleId], references: [id])
+  TeamMember TeamMember[]
+}
+
+model Player {
+  tag         String       @id
+  lastUpdated DateTime?
+  TeamMember  TeamMember[]
+}
+
+model TeamMember {
+  playerTag        String
+  teamId           Int
+  deckId           Int
+  startingTrophies Int
+
+  Player Player @relation(fields: [playerTag], references: [tag])
+  Team   Team   @relation(fields: [teamId], references: [id])
+  Deck   Deck   @relation(fields: [deckId], references: [id])
+
+  @@id([playerTag, teamId])
 }
