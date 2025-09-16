@@ -37,10 +37,13 @@ model Card {
 }
 
 model Deck {
-  id Int @id @default(autoincrement())
+  id   Int    @id @default(autoincrement())
+  hash String @unique
 
   Cards      Card[]
   TeamMember TeamMember[]
+
+  @@index([hash])
 }
 
 model GameMode {
@@ -55,6 +58,8 @@ model Battle {
   time       DateTime
   GameMode   GameMode @relation(fields: [gameModeId], references: [id])
   Team       Team[]
+
+  @@index([time]) // Setzt einen Index auf die `time`-Spalte
 }
 
 model Team {
@@ -75,7 +80,7 @@ model TeamMember {
   playerTag        String
   teamId           Int
   deckId           Int
-  startingTrophies Int
+  startingTrophies Int?
 
   Player Player @relation(fields: [playerTag], references: [tag])
   Team   Team   @relation(fields: [teamId], references: [id])

@@ -1,23 +1,91 @@
 import 'dotenv/config';
 import { fectchRecentBattles, fetchCards } from './api.js';
-import { upsertCard, getOrCreateDeck } from './database.js';
+import {
+  upsertCard,
+  getOrCreateBattle,
+  getNeverFetchedPlayers,
+  updatePlayerFetch,
+  loadCardCache,
+} from './database.js';
 
 async function main() {
   const cards = await fetchCards();
-  cards.items.forEach(async (card) => await upsertCard(card));
 
-  const battles = await fectchRecentBattles('#RCLC0J0YQ');
+  for (const card of cards.items) {
+    await upsertCard(card);
+  }
 
-  const mostRecentBattle = battles[0];
+  await loadCardCache();
 
-  if (!mostRecentBattle) return;
+  await loadBattles(3, 5000, 1500);
+}
 
-  const teamMember = mostRecentBattle.opponent[0];
+async function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  if (!teamMember) return;
+async function loadBattles(
+  maxDepth: number,
+  maxPlayers: number,
+  minDelayMs: number
+) {
+  let lastFetchTime: null | number = null;
+  let fetchedPlayers = 0;
 
-  const usedDeck = await getOrCreateDeck(teamMember.cards);
-  console.log(usedDeck.id);
+  for (let i = 0; i < maxDepth; i++) {
+    const playersToCheck = await getNeverFetchedPlayers();
+    const playerCount = playersToCheck.length;
+
+    if (fetchedPlayers > maxPlayers) {
+      console.log('Äußerer Loop: Max Anzahl Player erreicht!');
+      break;
+    }
+
+    for (let j = 0; j < playerCount; j++) {
+      if (fetchedPlayers > maxPlayers) {
+        console.log('Innerer Loop: Max Anzahl Player erreicht!');
+        break;
+      }
+
+      if (lastFetchTime) {
+        const timeSinceFetch = Date.now() - lastFetchTime;
+        console.log(`Dauer der letzten Anfrage: ${timeSinceFetch}`);
+
+        if (timeSinceFetch < minDelayMs) {
+          console.log('Dauer unter ' + minDelayMs + 'ms, warte...');
+          await wait(minDelayMs - timeSinceFetch);
+        }
+      }
+
+      lastFetchTime = Date.now();
+
+      console.log(
+        `Iteration ${i + 1}/${maxDepth}, Spieler ${j + 1}/${
+          playersToCheck.length
+        }`
+      );
+
+      const player = playersToCheck[j]!;
+      const battles = await fectchRecentBattles(player.tag);
+
+      for (const battle of battles) {
+        try {
+          await getOrCreateBattle(battle);
+        } catch (e) {
+          if (
+            e instanceof Error &&
+            e.message.endsWith('nicht im Cache gefunden!')
+          ) {
+            console.warn('Deck beinhaltet Eventkarte -> Skip');
+            continue;
+          }
+        }
+      }
+
+      await updatePlayerFetch(player.tag);
+      fetchedPlayers++;
+    }
+  }
 }
 
 main();

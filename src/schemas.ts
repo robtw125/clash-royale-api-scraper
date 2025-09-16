@@ -1,5 +1,18 @@
 import z from 'zod';
 
+export const CompactDateString = z
+  .string()
+  .regex(/^\d{8}T\d{6}\.\d{3}Z$/, 'Ungültiges Datum-Format')
+  .transform((val) => {
+    // Beispiel val: "20250908T071045.000Z"
+    const iso = val.replace(
+      /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})\.(\d{3})Z$/,
+      '$1-$2-$3T$4:$5:$6.$7Z'
+    );
+
+    return new Date(iso);
+  });
+
 export const locationSchema = z.object({
   id: z.number().positive().int(),
   name: z.string(),
@@ -25,13 +38,22 @@ export const playedCardSchema = cardSchema.extend({
 });
 
 export const playerBattleDataSchema = z.object({
+  tag: z.string(),
   cards: z.array(playedCardSchema),
+  crowns: z.number(),
+  startingTrophies: z.number().positive().int().optional(),
+});
+
+export const gameModeSchema = z.object({
+  id: z.number().positive().int(),
+  name: z.string(),
 });
 
 export const battleSchema = z.object({
-  battleTime: z.string(),
+  battleTime: CompactDateString,
   team: z.array(playerBattleDataSchema),
   opponent: z.array(playerBattleDataSchema),
+  gameMode: gameModeSchema,
 });
 
 export const recentBattlesResponse = z.array(battleSchema);
