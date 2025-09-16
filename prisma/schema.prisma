@@ -62,12 +62,20 @@ model Battle {
   @@index([time]) // Setzt einen Index auf die `time`-Spalte
 }
 
+//Ersetze crowns einfach durch ein Attribut "matchResult" mit dem Werten win, loss, draw
 model Team {
   id         Int          @id @default(autoincrement())
+  outcome    Outcome
   crowns     Int
   battleId   Int
   Battle     Battle       @relation(fields: [battleId], references: [id])
   TeamMember TeamMember[]
+}
+
+enum Outcome {
+  WIN
+  LOOSE
+  DRAW
 }
 
 model Player {
