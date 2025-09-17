@@ -1,4 +1,4 @@
-import { PrismaClient } from '../generated/prisma/client.js';
+import { PrismaClient, type Card } from '../generated/prisma/client.js';
 
 export class CardIdentifier {
   constructor(public supercellId: number, public isEvolution: boolean) {}
@@ -9,11 +9,11 @@ export class CardIdentifier {
 }
 
 export class CardCache {
-  private content: Map<string, number> = new Map();
+  private content: Map<string, Card> = new Map();
 
   constructor(private prisma: PrismaClient) {}
 
-  async get(identifier: CardIdentifier) {
+  async getOrThrow(identifier: CardIdentifier) {
     const key = identifier.toString();
     const storedId = this.content.get(key);
 
@@ -36,8 +36,8 @@ export class CardCache {
           `Die Karte ${key} wurde nicht in der Datenbank gefunden.`
         );
 
-      this.content.set(key, card.id);
-      return card.id;
+      this.content.set(key, card);
+      return card;
     }
 
     return storedId;

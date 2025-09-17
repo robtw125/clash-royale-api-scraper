@@ -3,5 +3,5 @@ node_modules
 .env
 
 /dist
-/generated/prisma
+/generated
 queries.txt

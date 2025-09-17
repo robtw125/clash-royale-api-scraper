@@ -1,6 +1,8 @@
-import { PrismaClient, Prisma } from '../generated/prisma/client.js';
+import { PrismaClient, Prisma, type Card } from '../generated/prisma/client.js';
 import { battleSchema, cardSchema, playedCardSchema } from './schemas.js';
 import crypto from 'crypto';
+
+import { CardCache, CardIdentifier } from './card-cache.js';
 
 import z from 'zod';
 
@@ -9,8 +11,9 @@ type PlayedCardData = z.infer<typeof playedCardSchema>;
 type BattleData = z.infer<typeof battleSchema>;
 
 const prisma = new PrismaClient();
+const cardCache = new CardCache(prisma);
 
-export async function upsertCard(cardData: CardData) {
+export async function upsertCard(cardData: CardData, isSupport: boolean) {
   const hasEvolution = cardData.maxEvolutionLevel ? true : false;
 
   const card = {
@@ -19,6 +22,7 @@ export async function upsertCard(cardData: CardData) {
     name: cardData.name,
     elixirCost: cardData.elixirCost,
     iconUrl: cardData.iconUrls.medium,
+    isSupport,
     Rarity: {
       connect: {
         name: cardData.rarity,
@@ -56,46 +60,7 @@ export async function upsertCard(cardData: CardData) {
   });
 }
 
-export async function getDeckById() {}
-
-/*export async function getOrCreateDeck(
-  playedCardsData: PlayedCardData[],
-  tx: Prisma.TransactionClient
-) {
-  const cardQueries = playedCardsData.map((playedCardData) => ({
-    supercellId: playedCardData.id,
-    isEvolution: playedCardData.evolutionLevel ? true : false,
-  }));
-
-  const cardIds = (
-    await tx.card.findMany({
-      where: { OR: cardQueries },
-      select: { id: true },
-    })
-  ).map((card) => card.id);
-
-  const existingDeck = await tx.deck.findFirst({
-    where: {
-      Cards: {
-        every: {
-          id: {
-            in: cardIds,
-          },
-        },
-      },
-    },
-  });
-
-  if (existingDeck) return existingDeck;
-
-  return await tx.deck.create({
-    data: {
-      Cards: {
-        connect: cardIds.map((id) => ({ id })),
-      },
-    },
-  });
-} */
+/** 
 
 async function createUniqueDecks(
   battle: BattleData,
@@ -253,40 +218,6 @@ export async function updatePlayerFetch(playerTag: string) {
   });
 }
 
-type CardIdentifier = { supercellId: number; isEvolution: boolean };
-
-const cardCache = new Map<string, number>();
-
-function getCardIdentifierString(cardIdentifier: CardIdentifier) {
-  const { supercellId, isEvolution } = cardIdentifier;
-  return `${supercellId}-${isEvolution ? 1 : 0}`;
-}
-
-function getCardIdFromCache(cardIdentifier: CardIdentifier) {
-  const identifierString = getCardIdentifierString(cardIdentifier);
-  const cardId = cardCache.get(identifierString);
-
-  if (!cardId)
-    throw new Error(
-      'Identifier ' + identifierString + ' nicht im Cache gefunden!'
-    );
-
-  return cardId;
-}
-
-export async function loadCardCache() {
-  const cards = await prisma.card.findMany();
-
-  for (const card of cards) {
-    const identifierString = getCardIdentifierString({
-      supercellId: card.supercellId,
-      isEvolution: card.isEvolution,
-    });
-
-    cardCache.set(identifierString, card.id);
-  }
-}
-
 function getDeckHash(cardIds: number[]) {
   const sortedId = cardIds.sort();
   const hashContent = sortedId.join('-');
@@ -321,4 +252,93 @@ async function perfGetOrCreateDeck(
       },
     },
   });
+}
+*/
+async function getOrCreateBattle() {}
+
+export class DeckFactory {
+  private cards: Card[] = [];
+  private static readonly MAX_CARDS = 9;
+
+  private hasCardVersion(card: Card): boolean {
+    return this.cards.some((c) => c.supercellId === card.supercellId);
+  }
+
+  private hasSupportCard(): boolean {
+    return this.cards.some((c) => c.isSupport);
+  }
+
+  private allSupercellIdsUnique(): boolean {
+    const supercellIds = this.cards.map((c) => c.supercellId);
+    return new Set(supercellIds).size === supercellIds.length;
+  }
+
+  private isDeckComplete(): boolean {
+    return this.cards.length === DeckFactory.MAX_CARDS;
+  }
+
+  private hasExactlyOneSupportCard(): boolean {
+    return this.cards.filter((c) => c.isSupport).length === 1;
+  }
+
+  private isValid(): boolean {
+    return (
+      this.allSupercellIdsUnique() &&
+      this.isDeckComplete() &&
+      this.hasExactlyOneSupportCard()
+    );
+  }
+
+  async addCard(identifier: CardIdentifier): Promise<void> {
+    const card = await cardCache.getOrThrow(identifier);
+
+    if (this.cards.length >= DeckFactory.MAX_CARDS) {
+      throw new Error(
+        `Cannot add card: deck already contains the maximum of ${DeckFactory.MAX_CARDS} cards.`
+      );
+    }
+
+    if (this.hasCardVersion(card)) {
+      throw new Error(
+        `Cannot add card: a card with supercellId "${card.supercellId}" is already in the deck.`
+      );
+    }
+
+    if (card.isSupport && this.hasSupportCard()) {
+      throw new Error(
+        'Cannot add card: the deck already contains a support card.'
+      );
+    }
+
+    this.cards.push(card);
+  }
+
+  getHash(): string {
+    const sortedCardIds = [...this.cards.map((c) => c.id)].sort();
+    const textToHash = sortedCardIds.join('-');
+    return crypto.createHash('sha256').update(textToHash).digest('hex');
+  }
+
+  async getOrCreate(transaction: Prisma.TransactionClient) {
+    if (!this.isValid()) {
+      throw new Error(
+        'Cannot create deck: deck does not meet all constraints (unique supercellIds, complete, exactly one support card).'
+      );
+    }
+
+    const existingDeck = await transaction.deck.findUnique({
+      where: { hash: this.getHash() },
+    });
+
+    if (existingDeck) return existingDeck;
+
+    return transaction.deck.create({
+      data: {
+        hash: this.getHash(),
+        Cards: {
+          connect: this.cards.map((c) => ({ id: c.id })),
+        },
+      },
+    });
+  }
 }

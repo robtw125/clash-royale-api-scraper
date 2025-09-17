@@ -30,6 +30,7 @@ model Card {
   elixirCost  Int?
   iconUrl     String
   rarityId    Int
+  isSupport   Boolean
   Rarity      Rarity  @relation(fields: [rarityId], references: [id])
   Decks       Deck[]
 

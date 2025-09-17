@@ -40,6 +40,7 @@ export const playedCardSchema = cardSchema.extend({
 export const playerBattleDataSchema = z.object({
   tag: z.string(),
   cards: z.array(playedCardSchema),
+  supportCards: z.array(playedCardSchema),
   crowns: z.number(),
   startingTrophies: z.number().positive().int().optional(),
 });
@@ -72,4 +73,6 @@ const responseWithPaging = <T extends z.ZodType>(schema: T) =>
   });
 
 export const locationsResponse = responseWithPaging(locationSchema);
-export const cardsReponse = responseWithPaging(cardSchema);
+export const cardsReponse = responseWithPaging(cardSchema).extend({
+  supportItems: z.array(cardSchema),
+});

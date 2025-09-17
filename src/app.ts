@@ -1,91 +1,37 @@
-import 'dotenv/config';
-import { fectchRecentBattles, fetchCards } from './api.js';
-import {
-  upsertCard,
-  getOrCreateBattle,
-  getNeverFetchedPlayers,
-  updatePlayerFetch,
-  loadCardCache,
-} from './database.js';
+import { DeckFactory, upsertCard } from './database.js';
+import { fetchCards, fectchRecentBattles } from './api.js';
+import { CardIdentifier } from './card-cache.js';
+import { PrismaClient } from '../generated/prisma/client.js';
 
 async function main() {
-  const cards = await fetchCards();
+  const battles = await fectchRecentBattles('#RCLC0J0YQ');
+  const allCards = await fetchCards();
 
-  for (const card of cards.items) {
-    await upsertCard(card);
+  for (const card of allCards.items) {
+    await upsertCard(card, false);
   }
 
-  await loadCardCache();
-
-  await loadBattles(3, 5000, 1500);
-}
-
-async function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function loadBattles(
-  maxDepth: number,
-  maxPlayers: number,
-  minDelayMs: number
-) {
-  let lastFetchTime: null | number = null;
-  let fetchedPlayers = 0;
-
-  for (let i = 0; i < maxDepth; i++) {
-    const playersToCheck = await getNeverFetchedPlayers();
-    const playerCount = playersToCheck.length;
-
-    if (fetchedPlayers > maxPlayers) {
-      console.log('Äußerer Loop: Max Anzahl Player erreicht!');
-      break;
-    }
-
-    for (let j = 0; j < playerCount; j++) {
-      if (fetchedPlayers > maxPlayers) {
-        console.log('Innerer Loop: Max Anzahl Player erreicht!');
-        break;
-      }
-
-      if (lastFetchTime) {
-        const timeSinceFetch = Date.now() - lastFetchTime;
-        console.log(`Dauer der letzten Anfrage: ${timeSinceFetch}`);
-
-        if (timeSinceFetch < minDelayMs) {
-          console.log('Dauer unter ' + minDelayMs + 'ms, warte...');
-          await wait(minDelayMs - timeSinceFetch);
-        }
-      }
-
-      lastFetchTime = Date.now();
-
-      console.log(
-        `Iteration ${i + 1}/${maxDepth}, Spieler ${j + 1}/${
-          playersToCheck.length
-        }`
-      );
-
-      const player = playersToCheck[j]!;
-      const battles = await fectchRecentBattles(player.tag);
-
-      for (const battle of battles) {
-        try {
-          await getOrCreateBattle(battle);
-        } catch (e) {
-          if (
-            e instanceof Error &&
-            e.message.endsWith('nicht im Cache gefunden!')
-          ) {
-            console.warn('Deck beinhaltet Eventkarte -> Skip');
-            continue;
-          }
-        }
-      }
-
-      await updatePlayerFetch(player.tag);
-      fetchedPlayers++;
-    }
+  for (const card of allCards.supportItems) {
+    await upsertCard(card, true);
   }
+
+  const factory = new DeckFactory();
+
+  let deckCards = battles[0]!.team[0]!.cards;
+  deckCards = deckCards.concat(battles[0]!.team[0]!.supportCards);
+
+  for (const card of deckCards) {
+    const identifier = new CardIdentifier(
+      card.id,
+      card.maxEvolutionLevel ? true : false
+    );
+
+    await factory.addCard(identifier);
+  }
+
+  const client = new PrismaClient();
+
+  await factory.getOrCreate(client);
 }
 
 main();
