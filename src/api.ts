@@ -22,7 +22,7 @@ export async function fetchCards() {
   return get(url, cardsReponse);
 }
 
-export async function fectchRecentBattles(playerTag: string) {
+export async function fetchRecentBattles(playerTag: string) {
   const encodedPlayerTag = encodeURIComponent(playerTag);
   const url = `${HOST}/players/${encodedPlayerTag}/battlelog`;
   return get(url, recentBattlesResponse);
