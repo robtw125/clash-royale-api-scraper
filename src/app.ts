@@ -18,6 +18,9 @@ async function fetchBattles(depth: number, maxBattles: number) {
   let battlesProcessed = 0;
   let lastFetchedAt = 0;
 
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
   for (let i = 1; i <= depth; i++) {
     console.log(`\n--- Depth: ${i}/${depth} ---`);
 
@@ -57,6 +60,22 @@ async function fetchBattles(depth: number, maxBattles: number) {
       console.timeEnd(`  Fetch Battles for ${player.tag}`);
 
       for (const battle of recentBattles) {
+        //Only keep Ladder and ranked1v1 games
+        if (
+          battle.gameMode.name !== 'Ladder' &&
+          !battle.gameMode.name.startsWith('Ranked1v1')
+        ) {
+          console.log(`Skipping battle of game mode ${battle.gameMode.name}`);
+          continue;
+        }
+
+        if (battle.battleTime < sevenDaysAgo) {
+          console.log(
+            `  Skipping battle from ${battle.battleTime.toISOString()} as it's older than 7 days.`
+          );
+          continue;
+        }
+
         if (battlesProcessed >= maxBattles) {
           console.log(
             `\nMax battle limit of ${maxBattles} reached. Stopping process.`
