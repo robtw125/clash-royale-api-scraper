@@ -1,5 +1,15 @@
-import { PrismaClient, Prisma, type Card } from '../generated/prisma/client.js';
-import { battleSchema, cardSchema, playedCardSchema } from './schemas.js';
+import {
+  PrismaClient,
+  Prisma,
+  type Card,
+  Outcome,
+} from '../generated/prisma/client.js';
+import {
+  battleSchema,
+  cardSchema,
+  playedCardSchema,
+  playerBattleDataSchema,
+} from './schemas.js';
 import crypto from 'crypto';
 
 import { CardCache, CardIdentifier } from './card-cache.js';
@@ -9,6 +19,7 @@ import z from 'zod';
 type CardData = z.infer<typeof cardSchema>;
 type PlayedCardData = z.infer<typeof playedCardSchema>;
 type BattleData = z.infer<typeof battleSchema>;
+type PlayerBattleData = z.infer<typeof playerBattleDataSchema>;
 
 const prisma = new PrismaClient();
 const cardCache = new CardCache(prisma);
@@ -60,201 +71,192 @@ export async function upsertCard(cardData: CardData, isSupport: boolean) {
   });
 }
 
-/** 
+export async function getUnfetchedPlayers() {
+  return prisma.player.findMany({
+    where: {
+      lastUpdated: null,
+    },
+  });
+}
 
-async function createUniqueDecks(
-  battle: BattleData,
-  tx: Prisma.TransactionClient
-) {
-  const playerData = battle.team.concat(battle.opponent);
+export async function updatePlayer(tag: string) {
+  await prisma.player.update({
+    where: {
+      tag,
+    },
+    data: {
+      lastUpdated: new Date(),
+    },
+  });
+}
 
-  const hashToPlayer = new Map<string, string[]>();
-  const hashToId = new Map<string, number>();
+//Maybe sowas wie eine "TeamConverter" Klasse! -> Nimmt API Anfrage und convertet sie in wunderbare DB Klassen
+//Vielleicht auch, dass sie einfach so CreateXType zurückgeben, sodass ich sie direkt in prisma queries einbauen kann!
+//Hier auch eine möglichkeit, battle im bulk erstellen zu können!!!
+//Fehlermeldung der DeckFactory verbessern!
 
-  // Schritt 1: Iteriere durch alle Spieler und berechne/erhalte Decks
-  for (const player of playerData) {
-    const cardIds = player.cards.map((card) =>
-      getCardIdFromCache({
-        supercellId: card.id,
-        isEvolution: card.evolutionLevel ? true : false,
-      })
-    );
+class TeamMember {
+  public playerTag: string;
+  public startingTrophies: number | null;
+  public deck: DeckFactory = new DeckFactory();
 
-    const deckHash = getDeckHash(cardIds);
+  constructor(private playerData: PlayerBattleData) {
+    this.playerTag = playerData.tag;
+    this.startingTrophies = playerData.startingTrophies ?? null;
+  }
 
-    // Wenn der Deck-Hash nicht existiert, dann erstell das Deck und füge es hinzu
-    if (!hashToPlayer.has(deckHash)) {
-      const deck = await perfGetOrCreateDeck(player.cards, tx);
-      hashToId.set(deckHash, deck.id);
-      hashToPlayer.set(deckHash, [player.tag]); // Erstelle neue Liste mit dem Spieler-Tag
-    } else {
-      // Wenn der Deck-Hash schon existiert, füge das Spieler-Tag der Liste hinzu
-      hashToPlayer.get(deckHash)!.push(player.tag);
+  async initializeDeck() {
+    for (const card of this.playerData.cards.concat(
+      this.playerData.supportCards
+    )) {
+      await this.deck.addCard(
+        new CardIdentifier(card.id, card.evolutionLevel ? true : false)
+      );
     }
   }
 
-  // Schritt 2: Erstelle eine Map von PlayerTags zu Deck-IDs
-  const playerToDeckId = new Map<string, number>();
+  private getCardIdentifier(cardData: PlayedCardData) {
+    return new CardIdentifier(
+      cardData.id,
+      cardData.maxEvolutionLevel ? true : false
+    );
+  }
 
-  hashToPlayer.forEach((playerTags, deckHash) => {
-    const deckId = hashToId.get(deckHash)!;
-    playerTags.forEach((playerTag) => {
-      playerToDeckId.set(playerTag, deckId);
+  public getCreateData() {
+    return {
+      startingTrophies: this.startingTrophies,
+      Player: {
+        connectOrCreate: {
+          where: {
+            tag: this.playerTag,
+          },
+          create: {
+            tag: this.playerTag,
+          },
+        },
+      },
+      Deck: {
+        connect: {
+          hash: this.deck.getHash(),
+        },
+      },
+    };
+  }
+}
+
+class Team {
+  private crowns: number;
+  private members: TeamMember[] = [];
+
+  constructor(private playerData: PlayerBattleData[]) {
+    if (playerData.length <= 0) throw new Error();
+
+    this.crowns = playerData[0]!.crowns;
+
+    for (const player of playerData) {
+      this.members.push(new TeamMember(player));
+    }
+  }
+
+  getCrowns() {
+    return this.crowns;
+  }
+
+  getOutcome(opposingTeam: Team) {
+    const crownDifference = this.crowns - opposingTeam.getCrowns();
+
+    if (crownDifference > 0) {
+      return Outcome.WIN;
+    }
+
+    if (crownDifference < 0) {
+      return Outcome.LOSS;
+    }
+
+    return Outcome.DRAW;
+  }
+
+  getMembers() {
+    return this.members;
+  }
+
+  getCreateData(opposingTeam: Team) {
+    return {
+      crowns: this.getCrowns(),
+      outcome: this.getOutcome(opposingTeam),
+      TeamMember: {
+        create: this.members.map((member) => member.getCreateData()),
+      },
+    };
+  }
+}
+
+async function createUniqueDecks(
+  participants: TeamMember[],
+  transaction: Prisma.TransactionClient
+) {
+  const createdDeckHashes: string[] = [];
+
+  //Scuffed ash (initializing the decks here)
+  for (const participant of participants) {
+    if (!createdDeckHashes.includes(participant.deck.getHash())) {
+      await participant.initializeDeck();
+      await participant.deck.getOrCreate(transaction);
+      createdDeckHashes.push(participant.deck.getHash());
+    }
+  }
+}
+
+export async function getOrCreateBattle(battleData: BattleData) {
+  const teamOne = new Team(battleData.team);
+  const teamTwo = new Team(battleData.opponent);
+
+  const participants = teamOne.getMembers().concat(teamTwo.getMembers());
+
+  return await prisma.$transaction(async (tx) => {
+    const existingBattle = await tx.battle.findFirst({
+      where: {
+        time: battleData.battleTime,
+        Team: {
+          some: {
+            TeamMember: {
+              some: {
+                playerTag: participants[0]!.playerTag,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (existingBattle) return existingBattle;
+
+    await createUniqueDecks(participants, tx);
+
+    await tx.battle.create({
+      data: {
+        time: battleData.battleTime,
+        Team: {
+          create: [
+            teamOne.getCreateData(teamTwo),
+            teamTwo.getCreateData(teamOne),
+          ],
+        },
+        GameMode: {
+          connectOrCreate: {
+            where: {
+              id: battleData.gameMode.id,
+            },
+            create: {
+              id: battleData.gameMode.id,
+              name: battleData.gameMode.name,
+            },
+          },
+        },
+      },
     });
   });
-
-  return playerToDeckId;
 }
-
-export async function getOrCreateBattle(battle: BattleData) {
-  return prisma.$transaction(
-    async (tx) => {
-      const existingBattle = await tx.battle.findFirst({
-        where: {
-          time: battle.battleTime,
-          Team: {
-            some: {
-              TeamMember: {
-                some: {
-                  playerTag: battle.team[0]?.tag ?? 'test',
-                },
-              },
-            },
-          },
-        },
-        include: {
-          Team: {
-            include: {
-              TeamMember: true,
-            },
-          },
-        },
-      });
-
-      if (existingBattle) return existingBattle;
-
-      const playerTagToDeckId = await createUniqueDecks(battle, tx);
-
-      return tx.battle.create({
-        data: {
-          time: battle.battleTime,
-          Team: {
-            create: [
-              {
-                crowns: battle.team[0]?.crowns ?? 0,
-                TeamMember: {
-                  create: await Promise.all(
-                    battle.team.map(async (teamMember) => ({
-                      startingTrophies: teamMember.startingTrophies ?? null,
-                      Deck: {
-                        connect: {
-                          id: playerTagToDeckId.get(teamMember.tag)!,
-                        },
-                      },
-                      Player: {
-                        connectOrCreate: {
-                          where: {
-                            tag: teamMember.tag,
-                          },
-                          create: {
-                            tag: teamMember.tag,
-                          },
-                        },
-                      },
-                    }))
-                  ),
-                },
-              },
-              {
-                crowns: battle.opponent[0]?.crowns ?? 0,
-                TeamMember: {
-                  create: await Promise.all(
-                    battle.opponent.map(async (teamMember) => ({
-                      startingTrophies: teamMember.startingTrophies ?? null,
-                      Deck: {
-                        connect: {
-                          id: playerTagToDeckId.get(teamMember.tag)!,
-                        },
-                      },
-                      Player: {
-                        connectOrCreate: {
-                          where: {
-                            tag: teamMember.tag,
-                          },
-                          create: {
-                            tag: teamMember.tag,
-                          },
-                        },
-                      },
-                    }))
-                  ),
-                },
-              },
-            ],
-          },
-          GameMode: {
-            connectOrCreate: {
-              where: {
-                id: battle.gameMode.id,
-              },
-              create: { id: battle.gameMode.id, name: battle.gameMode.name },
-            },
-          },
-        },
-      });
-    },
-    { isolationLevel: 'ReadUncommitted' }
-  );
-}
-
-export async function getNeverFetchedPlayers() {
-  return prisma.player.findMany({ where: { lastUpdated: null } });
-}
-
-export async function updatePlayerFetch(playerTag: string) {
-  await prisma.player.update({
-    where: { tag: playerTag },
-    data: { lastUpdated: new Date() },
-  });
-}
-
-function getDeckHash(cardIds: number[]) {
-  const sortedId = cardIds.sort();
-  const hashContent = sortedId.join('-');
-  return crypto.createHash('sha256').update(hashContent).digest('hex');
-}
-
-async function perfGetOrCreateDeck(
-  playedCards: PlayedCardData[],
-  tx: Prisma.TransactionClient
-) {
-  const cardIdentifiers = playedCards.map((card) => ({
-    supercellId: card.id,
-    isEvolution: card.evolutionLevel ? true : false,
-  }));
-
-  const cardIds = cardIdentifiers.map((identifier) =>
-    getCardIdFromCache(identifier)
-  );
-
-  const deckHash = getDeckHash(cardIds);
-  const existingDeck = await tx.deck.findUnique({ where: { hash: deckHash } });
-
-  if (existingDeck) return existingDeck;
-
-  return tx.deck.create({
-    data: {
-      hash: deckHash,
-      Cards: {
-        connect: cardIds.map((id) => ({
-          id,
-        })),
-      },
-    },
-  });
-}
-*/
-async function getOrCreateBattle() {}
 
 export class DeckFactory {
   private cards: Card[] = [];
@@ -321,6 +323,12 @@ export class DeckFactory {
 
   async getOrCreate(transaction: Prisma.TransactionClient) {
     if (!this.isValid()) {
+      console.warn(
+        this.allSupercellIdsUnique(),
+        this.isDeckComplete(),
+        this.hasExactlyOneSupportCard()
+      );
+      console.warn(this.cards);
       throw new Error(
         'Cannot create deck: deck does not meet all constraints (unique supercellIds, complete, exactly one support card).'
       );

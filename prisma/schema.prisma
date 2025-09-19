@@ -75,7 +75,7 @@ model Team {
 
 enum Outcome {
   WIN
-  LOOSE
+  LOSS
   DRAW
 }
 
